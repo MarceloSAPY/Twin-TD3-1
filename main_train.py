@@ -65,7 +65,8 @@ if_BS = False
 if_robust = True
 
 
-# 2 init RL Agent
+# 2 init RL Agent 
+# Control RIS phase shift and reflection coefficents
 agent_1_param_dic = {}
 agent_1_param_dic["alpha"] = 0.0001
 agent_1_param_dic["beta"] = 0.001
@@ -80,7 +81,7 @@ agent_1_param_dic["layer1_size"] = 800
 agent_1_param_dic["layer2_size"] = 600
 agent_1_param_dic["layer3_size"] = 512
 agent_1_param_dic["layer4_size"] = 256
-
+# Control UAV movement
 agent_2_param_dic = {}
 agent_2_param_dic["alpha"] = 0.0001
 agent_2_param_dic["beta"] = 0.001
