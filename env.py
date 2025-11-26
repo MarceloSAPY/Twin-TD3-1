@@ -60,8 +60,8 @@ class MiniSystem(object):
     define mini RIS communication system with one UAV
         and one RIS and one user, one attacker
     """
-    def __init__(self, UAV_num = 1, RIS_num = 1, user_num = 1, attacker_num = 1, fre = 28e9, \
-                 RIS_ant_num = 16, UAV_ant_num=8, if_dir_link = 1, if_with_RIS = True, \
+    def __init__(self, UAV_num = 1, RIS_num = 1, user_num = 1, attacker_num = 0, fre = 28e9, \
+                 RIS_ant_num = 32, UAV_ant_num=8, if_dir_link = 1, if_with_RIS = True, \
                  if_move_users = True, if_movements = True, reverse_x_y = (True, True), \
                  if_UAV_pos_state = True, reward_design = 'ssr', project_name = None, step_num=100):
         self.if_dir_link = if_dir_link
@@ -73,9 +73,14 @@ class MiniSystem(object):
         self.user_num = user_num
         self.attacker_num = attacker_num
         self.border = [(-25,25), (0, 50)]
+        # --- NEW: Hybrid RIS Parameters () ---
+        # 1. Noise Power Setup (Based on Nguyen et al., 2024, Table 1 & Sec V)
+        # User noise power: -80 dBm
+        self.sigma_u_dBm = -80 
+        self.sigma_u = 10 ** (self.sigma_u_dBm / 10) * 1e-3 # Convert dBm to Watts (Linear)
         # 1.init entities: 1 UAV, 1 RIS, many users and attackers
         self.data_manager = DataManager(file_path='./data', project_name = project_name, \
-        store_list = ['beamforming_matrix', 'reflecting_coefficient', 'UAV_state', 'user_capacity', 'secure_capacity', 'attaker_capacity','G_power', 'reward','UAV_movement'])
+        store_list = ['beamforming_matrix', 'reflecting_coefficient', 'UAV_state', 'user_capacity', 'secure_capacity', 'attaker_capacity','G_power', 'reward','UAV_movement','total_power'])
         # 1.1 init UAV position and beamforming matrix
         self.UAV = UAV(
             coordinate=self.data_manager.read_init_location('UAV', 0), 
@@ -95,7 +100,7 @@ class MiniSystem(object):
         for i in range(user_num):
             user_coordinate = self.data_manager.read_init_location('user', i)
             user = User(coordinate=user_coordinate, index=i)
-            user.noise_power = -114
+            user.noise_power = self.sigma_u_dBm # Update to -80 dBm
             self.user_list.append(user)
 
         # 1.4 init attackers
@@ -115,7 +120,29 @@ class MiniSystem(object):
 
         # 1.7 step_num
         self.step_num = step_num
-        
+                
+        # 2. Active RIS Noise / Self-Interference (Eq 3 & 5)
+        # sigma_r^2 = (eta + 1) * sigma_u^2
+        # eta = 1 dB reflects residual Self-Interference (SI)
+        self.eta_dB = 1 
+        self.eta_lin = 10 ** (self.eta_dB / 10)
+        # Noise power at RIS (Thermal Noise + Residual SI)
+        self.sigma_r = (self.eta_lin + 1) * self.sigma_u 
+
+        # 3. Amplification Limit (Sec II.A)
+        # Maximum gain for active elements is 40 dB
+        self.a_max_dB = 40
+        # Convert Power Gain (dB) to Voltage/Amplitude Gain limit: 
+        # Gain_dB = 20 * log10(Amplitude) -> Amplitude = 10^(dB/20)
+        self.a_max = 10 ** (self.a_max_dB / 20)
+        # 3.1 --- GAP 3 FIX: POWER BUDGET ---
+        # Define the maximum power the active RIS is allowed to consume.
+        # Paper uses 0 dBm (1 mW) or 5 dBm.
+        self.p_max_ris_dBm = 5 # Let's give it 5 dBm (3.1 mW) to be safe
+        self.p_max_ris = 10 ** (self.p_max_ris_dBm / 10) * 1e-3
+        # 4. Active Elements (Assuming partial active, e.g., 4 elements)
+        self.num_active_elements = 4 # You can parameterize this later
+        # ------------------------------------------
         # 2.init channel
         self.H_UR = mmWave_channel(self.UAV, self.RIS, fre)
         self.h_U_k = []
@@ -227,18 +254,146 @@ class MiniSystem(object):
         # fix beamforming matrix
         #self.UAV.G = np.mat(np.ones((self.UAV.ant_num, self.user_num), dtype=complex), dtype=complex) * math.pow(self.power_factor, 0.5)
         if self.if_with_RIS:
+            # 1. Convert Action to Matrix (Standard Phase Shift)
+            # This creates a diagonal matrix with entries e^(j*theta), amplitude = 1
             self.RIS.Phi = convert_list_to_complex_diag(Phi, self.RIS.ant_num)
+            
+            # --- GAP 1 FIX: ACTION SCALING ---
+            # The agent outputs actions for Phase, but we must enforce Amplification for Active Elements.
+            # We assume the first N_a elements are the active ones.
+            
+            N_a = getattr(self, 'num_active_elements', 4)
+            a_max = getattr(self, 'a_max', 100) # Default to 100 (40dB) if not set
+            
+            # Extract the diagonal (the coefficients)
+            # We need to convert the matrix to an array to edit it easily
+            phi_diag = np.diag(self.RIS.Phi).copy()
+            
+            # Scale the Active Elements
+            # We set their amplitude to a_max (Max Gain)
+            # Note: Ideally, the agent would control gain, but since we have fixed output dimensions, 
+            # forcing Max Gain is a standard simplification for Hybrid RIS.
+            for i in range(N_a):
+                phi_diag[i] = phi_diag[i] * a_max
+            
+            # Reconstruct the diagonal matrix
+            self.RIS.Phi = np.mat(np.diag(phi_diag))
+            # ---------------------------------
         # 4 update channel capacity in every user and attacker
         self.update_channel_capacity()
         # 5 store current system state to .mat
         self.store_current_system_sate()
+        # ... inside step() ...
+        
         # 6 get new state
         new_state = self.observe()
-        # 7 get reward
-        reward = self.reward()
+        
+        # 7 get reward (OLD LOGIC - DISABLED)
+        # reward = self.reward() 
+        
+        # Initialize reward to 0 just in case
+        reward = 0
         
         # 7.1 reward with energy efficiency
         ######################################################
+        if self.reward_design == 'fair':            
+            # --- A. Calculate Total Power Consumption (The Cost) ---            
+            # 1. UAV Propulsion Power (Existing global function)
+            # v_t was calculated earlier in step() loop
+            power_propulsion = get_energy_consumption(v_t) / delta_time 
+            
+            # 2. UAV Transmission Power
+            # Sum of squared magnitudes of beamforming vector G
+            power_transmit = np.trace(self.UAV.G * self.UAV.G.H).real
+            
+           # 3. Hybrid RIS Active Power
+           # a) Calculate Incident Signal Matrix
+            # Signal traveling UAV -> RIS = H_UR * G
+            # Result is a matrix of shape (N_RIS_Elements, K_Users)
+            incident_signal_matrix = self.H_UR.channel_matrix * self.UAV.G                                    
+            # b) Calculate Incident Power per Element
+            # MODIFIED: Use np.square() to force element-wise operation on numpy matrices
+            incident_power_per_element = np.sum(np.square(np.abs(incident_signal_matrix)), axis=1)
+
+            # c) Calculate Active Power Consumption
+            # We only consume power for the ACTIVE elements (first N_a)
+            N_a = getattr(self, 'num_active_elements', 4)
+            sigma_r = getattr(self, 'sigma_r', 1e-9) # Noise floor from Step 2
+            
+            # Extract Amplification Factors (|alpha|^2) for active elements
+            # Psi is the diagonal matrix of RIS coefficients
+            Psi_diag = np.diag(self.RIS.Phi)
+            active_gains_sq = np.abs(Psi_diag[:N_a])**2
+            
+            # Extract Incident Power for active elements
+            # Flatten to ensure it matches the shape of active_gains_sq
+            # OLD: active_incident_power = np.array(incident_power_per_element[:N_a]).flatten()
+            # NEW: Cap the incident power to avoid explosion
+            # Many implementations assume automatic gain control (AGC) limits input power
+            raw_incident_power = np.array(incident_power_per_element[:N_a]).flatten()
+            active_incident_power = np.clip(raw_incident_power, 0, 1.0) # Cap at 1 Watt (example)
+            
+            # Apply Equation (7): Sum( |alpha|^2 * (sigma_r^2 + Incident_Power) )
+            power_ris_active = np.sum(active_gains_sq * (sigma_r**2 + active_incident_power))
+            # --- GAP 3 FIX: POWER CONSTRAINT PENALTY ---
+            # If the agent tries to use more power than the hardware allows, punish it.
+            # This forces the agent to learn "Efficient Amplification".
+            
+            power_penalty = 0
+            if power_ris_active > self.p_max_ris:
+                # Penalty proportional to the violation amount
+                # Multiplied by a factor (e.g., 10 or 100) to make it hurt
+                diff = power_ris_active - self.p_max_ris
+                power_penalty = -10 * diff 
+                
+                # Option: You could also clamp the power to the max for the total_power calc
+                # power_ris_active = self.p_max_ris 
+            # -------------------------------------------
+
+            # 4. Total System Power
+            # 4. Total System Power
+            # This is the denominator of your EE metric
+            total_power = power_propulsion + power_transmit + power_ris_active
+            
+            # (We will use 'total_power' in Step 5 to calculate the final Reward)
+            # For now, to prevent errors, let's just define a temporary placeholder reward
+            reward = 0
+            # ... inside step() ... inside 'fair' block ...
+            # (After calculating total_power from Step 4)
+            # --- B. Calculate Fairness Reward (Step 5) ---            
+            # 1. Compute Rates for ALL users (Max-Min Logic)
+            rates = []
+            for k in range(self.user_num):
+                # Use the updated capacity function (which includes Hybrid Noise from Step 3)
+                # Note: calculate_capacity_of_user_k returns log10(1+SINR). 
+                # For standard rate (nats/s/Hz), we might want log(1+SINR) (natural log).
+                # The original code used math.log10, so we stick to it for consistency, 
+                # or convert to natural log if comparing with paper (multiply by ln(10)).
+                r_k = self.calculate_capacity_of_user_k(k) 
+                rates.append(r_k)
+            
+            # 2. Identify the Bottleneck User (Fairness)
+            # The reward is limited by the WORST user.
+            min_rate = np.min(rates)            
+            # 3. Calculate Fairness-Aware Energy Efficiency
+            # Objective = Min_Rate / Total_Power
+            # Unit: Bits (or nats) per Joule            
+            # Small epsilon to prevent division by zero if power is 0 (unlikely)
+            epsilon = 1e-6
+            
+            reward = min_rate / (total_power + epsilon)
+            
+            # 4. Scaling (Important for DRL stability)
+            # EE values can be very small (e.g., 1e-6). DRL agents struggle with tiny gradients.
+            # We scale it up to a reasonable range (e.g., 0-10 or 0-100).
+            reward_scale_factor = 1000 
+            reward = reward * reward_scale_factor
+
+            # (Optional) Penalty for extremely low fairness (Dead Zone)
+            # If the worst user has 0 rate, give a large negative penalty to force coverage.
+            if min_rate < 1e-2:
+                reward -= 5
+        
         if self.reward_design == 'see':
             # new for see
             energy = energy_raw = get_energy_consumption(v_t)
@@ -288,6 +443,7 @@ class MiniSystem(object):
         """
         used in function main to get current state
         the state is a list with 
+        MODIFIED: Added User Rates (Gap 2)
         """
         # users' and attackers' comprehensive channel
         comprehensive_channel_elements_list = []
@@ -298,7 +454,12 @@ class MiniSystem(object):
         if self.if_UAV_pos_state:
             UAV_position_list = list(self.UAV.coordinate)
 
-        return comprehensive_channel_elements_list + UAV_position_list
+        # --- GAP 2 FIX: Add User Rates to State ---
+        # Now the beamforming agent sees exactly who is suffering
+        user_rates_list = [user.capacity for user in self.user_list]
+        
+        return comprehensive_channel_elements_list + UAV_position_list + user_rates_list
+        
 
     def store_current_system_sate(self):
         """
@@ -319,7 +480,10 @@ class MiniSystem(object):
         # 5 store G_power
         row_data = [np.trace(self.UAV.G*self.UAV.G.H), self.UAV.G_Pmax]
         self.data_manager.store_data(row_data, 'G_power')
-        row_data = []
+        # --- NEW: Store Total Power ---
+        # We must ensure self.total_power is set before this function is called!
+        row_data = [getattr(self, 'total_power', 0)] 
+        self.data_manager.store_data(row_data, 'total_power')
         for user in self.user_list:
             row_data.append(user.capacity)
         self.data_manager.store_data(row_data, 'user_capacity')
@@ -340,17 +504,20 @@ class MiniSystem(object):
         function used in step to calculate user and attackers' capacity 
         """
         # 1 calculate eavesdrop rate
-        for attacker in self.attacker_list:
-            attacker.capacity = self.calculate_capacity_array_of_attacker_p(attacker.index)
-            self.eavesdrop_capacity_array[attacker.index, :] = attacker.capacity
-            # remmeber to update comprehensive_channel
-            attacker.comprehensive_channel = self.calculate_comprehensive_channel_of_attacker_p(attacker.index)
+        #for attacker in self.attacker_list:
+        #    attacker.capacity = self.calculate_capacity_array_of_attacker_p(attacker.index)
+        #    self.eavesdrop_capacity_array[attacker.index, :] = attacker.capacity
+        #    # remmeber to update comprehensive_channel
+        #    attacker.comprehensive_channel = self.calculate_comprehensive_channel_of_attacker_p(attacker.index)
         # 2 calculate unsecure rate
         for user in self.user_list:
+            # Calculate Capacity (using the new noise model from Step 3)
             user.capacity = self.calculate_capacity_of_user_k(user.index)
-            # 3 calculate secure rate
-            user.secure_capacity = self.calculate_secure_capacity_of_user_k(user.index)
-            # remmeber to update comprehensive_channel
+            
+            # 3. Calculate secure rate (DISABLED - Not needed for Fairness)
+            # user.secure_capacity = self.calculate_secure_capacity_of_user_k(user.index)
+            
+            # Update Channel State (REQUIRED for Agent Observation)
             user.comprehensive_channel = self.calculate_comprehensive_channel_of_user_k(user.index)
 
     def calculate_comprehensive_channel_of_attacker_p(self, p):
@@ -376,12 +543,18 @@ class MiniSystem(object):
     def calculate_capacity_of_user_k(self, k):
         """
         function used in update_channel_capacity to calculate one user
+        MODIFIED: Includes Hybrid RIS Active Noise (Step 3)
+        Based: equation 3, equation  7 power of active elements of ris
         """     
-        noise_power = self.user_list[k].noise_power
+        # 1. Identify User Noise Power (Linear Watts)
+        # Existing code stores noise_power in dBm. Convert to Watts.
+        user_noise_power = dB_to_normal(self.user_list[k].noise_power) * 1e-3
+        
         h_U_k = self.h_U_k[k].channel_matrix
         h_R_k = self.h_R_k[k].channel_matrix
         Psi = diag_to_vector(self.RIS.Phi)
         H_c = vector_to_diag(h_R_k).H * self.H_UR.channel_matrix
+        
         G_k = self.UAV.G[:, k]
         G_k_ = 0
         if len(self.user_list) == 1:
@@ -390,8 +563,44 @@ class MiniSystem(object):
             G_k_1 = self.UAV.G[:, 0:k]
             G_k_2 = self.UAV.G[:, k+1:]
             G_k_ = np.hstack((G_k_1, G_k_2))
+            
+        # 2. Calculate Signal Power (Numerator)
         alpha_k = math.pow(abs((h_U_k.H + Psi.H * H_c) * G_k), 2)
-        beta_k = math.pow(np.linalg.norm((h_U_k.H + Psi.H * H_c)*G_k_), 2) + dB_to_normal(noise_power) * 1e-3
+        
+        # 3. Calculate Interference Power (from other users)
+        interference = math.pow(np.linalg.norm((h_U_k.H + Psi.H * H_c)*G_k_), 2)
+        
+        # --- NEW: Hybrid RIS Amplified Noise (Step 3) ---
+        # Formula: sum( |h_{2,k,n}|^2 * |alpha_n|^2 ) * sigma_r
+        # Only active elements amplify noise.
+        
+        # Get number of active elements (defined in Step 2)
+        N_a = getattr(self, 'num_active_elements', 4) 
+        
+        # Flatten arrays for element-wise calculation
+        h_R_k_flat = np.array(h_R_k).flatten() # Channel from RIS to User
+        Psi_flat = np.array(Psi).flatten()     # RIS Coefficients (Active + Passive)
+        
+        active_noise_power = 0.0
+        # the code assume the first N_a elements are the active ones (indices 0 to N_a-1)
+        # This matches the paper's simulation setup where A = {1, ..., Na}
+        # 
+        if hasattr(self, 'sigma_r'):
+            for n in range(N_a):
+                # |Channel|^2 * |Gain|^2
+                channel_gain_sq = abs(h_R_k_flat[n]) ** 2
+                amp_gain_sq = abs(Psi_flat[n]) ** 2
+                
+                # Add noise contribution: Gain * Noise_Floor_at_RIS
+                active_noise_power += channel_gain_sq * amp_gain_sq * self.sigma_r
+        else:
+            # Fallback if Step 2 wasn't run correctly
+            print("Warning: sigma_r not defined. Skipping Active Noise.")
+            
+        # 4. Total Denominator (Interference + Active Noise + User Noise)
+        beta_k = interference + active_noise_power + user_noise_power
+        
+        # Return Rate (Using log10 as per original codebase convention)
         return math.log10(1 + abs(alpha_k / beta_k))
 
     def calculate_capacity_array_of_attacker_p(self, p):
@@ -452,6 +661,7 @@ class MiniSystem(object):
     def get_system_state_dim(self):
         """
         function used in main function to get the dimention of states
+        MODIFIED: Added dimension for User Rates (Gap 2)
         """
         result = 0
         # users' and attackers' comprehensive channel
@@ -459,4 +669,8 @@ class MiniSystem(object):
         # UAV position
         if self.if_UAV_pos_state:
             result += 3
+            
+        # --- GAP 2 FIX: Add User Rates Dimension ---
+        result += self.user_num 
+        # -------------------------------------------
         return result

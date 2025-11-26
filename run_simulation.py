@@ -24,6 +24,8 @@ else:
 # reward design
 if 'see' in STORE_PATH:
     REWARD_DESIGN = 'see'
+elif 'fair' in STORE_PATH:
+    REWARD_DESIGN = 'fair'
 else:
     REWARD_DESIGN = 'ssr'
 
@@ -32,7 +34,7 @@ SEEDS = None
 
 # process the argument
 assert DRL_ALGO in ['ddpg', 'td3'], "drl must be ['ddpg', 'td3']"
-assert REWARD_DESIGN in ['ssr', 'see'], "reward must be ['ssr', 'see']"
+assert REWARD_DESIGN in ['ssr', 'see', 'fair'], "reward must be ['ssr', 'see', 'fair']"
 if SEEDS is not None:
     assert len(SEEDS) in [1, 2] and isinstance(SEEDS[0], int) and isinstance(SEEDS[-1], int), "seeds must be a list of 1 or 2 integer"
 

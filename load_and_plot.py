@@ -83,7 +83,7 @@ class LoadAndPlot(object):
     load date and plot 2022-07-22 16_16_26
     """
     def __init__(self, store_path, \
-                       user_num = 2, attacker_num = 1, RIS_ant_num = 4, \
+                       user_num = 2, attacker_num = 0, RIS_ant_num = 32, \
                        ep_num = EP_NUM, step_num = 100): # RIS_ant_num = 16 (not true)
 
         self.color_list = ['b', 'c', 'g', 'k', 'm', 'r', 'y']
@@ -110,9 +110,9 @@ class LoadAndPlot(object):
         for i in range(self.user_num):
             result_dic['user_capacity'].append([])
 
-        result_dic.update({'secure_capacity':[]})
+        result_dic.update({'user_capacity':[]})
         for i in range(self.user_num):
-            result_dic['secure_capacity'].append([])
+            result_dic['user_capacity'].append([])
 
         result_dic.update({'attaker_capacity':[]})
         for i in range(self.attacker_num):
@@ -132,9 +132,9 @@ class LoadAndPlot(object):
             for i in range(self.user_num):
                 result_dic['user_capacity'][i] += list(one_ep_user_capacity[:, i])
             
-            one_ep_secure_capacity = mat_ep["result_" + str(ep_cnt)]["secure_capacity"][0][0]
+            one_ep_user_capacity = mat_ep["result_" + str(ep_cnt)]["user_capacity"][0][0]
             for i in range(self.user_num):
-                result_dic['secure_capacity'][i] += list(one_ep_secure_capacity[:, i])
+                result_dic['user_capacity'][i] += list(one_ep_user_capacity[:, i])
             
             one_ep_attaker_capacity = mat_ep["result_" + str(ep_cnt)]["attaker_capacity"][0][0]
             for i in range(self.attacker_num):
@@ -182,27 +182,27 @@ class LoadAndPlot(object):
         ###############################
         # plot secure capacity
         ###############################
-        fig = plt.figure('secure_capacity')
+        fig = plt.figure('user_capacity')
         for i in range(self.user_num):
-            plt.plot(range(len(self.all_steps['secure_capacity'][i])), self.all_steps['secure_capacity'][i], c=color_list[i])
+            plt.plot(range(len(self.all_steps['user_capacity'][i])), self.all_steps['user_capacity'][i], c=color_list[i])
         plt.legend(['user_' + str(i) for i in range(self.user_num)])
         plt.xlabel("Time Steps ($t$)")
         plt.ylabel("Secure Capacity")
-        plt.savefig(self.store_path + 'plot/secure_capacity.png')
+        plt.savefig(self.store_path + 'plot/user_capacity.png')
         plt.cla()
 
         
         ###############################
-        # plot average sum secrecy rate of each episode
+        # plot average sum rate of each episode
         ###############################
-        fig = plt.figure('average_sum_secrecy_rate')
-        sum_secrecy_rate = np.array(self.all_steps['secure_capacity'])
-        sum_secrecy_rate = np.sum(sum_secrecy_rate, axis = 0)
-        average_sum_secrecy_rate = []
+        fig = plt.figure('average_sum_rate')
+        sum_rate = np.array(self.all_steps['user_capacity'])
+        sum_rate = np.sum(sum_rate, axis = 0)
+        average_sum_rate = []
         ssr = []
         j = 0
         for i in range(self.ep_num):
-            ssr_one_episode = sum_secrecy_rate[j:j+step_num_per_episode[i]] # ssr means Sum Secrecy Rate
+            ssr_one_episode = sum_rate[j:j+step_num_per_episode[i]] # ssr means Sum Secrecy Rate
             #print(j, j+step_num_per_episode[i])
             j = j+step_num_per_episode[i]
             ssr.append(ssr_one_episode)
@@ -210,19 +210,62 @@ class LoadAndPlot(object):
                 _ = sum(ssr_one_episode) / len(ssr_one_episode)
             except:
                 _ = 0
-            average_sum_secrecy_rate.append(_)
-        plt.plot(range(len(average_sum_secrecy_rate)), average_sum_secrecy_rate)
+            average_sum_rate.append(_)
+        plt.plot(range(len(average_sum_rate)), average_sum_rate)
         plt.xlabel("Episodes (Ep)")
         plt.ylabel("Average Sum Secrecy Rate")
-        plt.savefig(self.store_path + 'plot/average_sum_secrecy_rate.png')
+        plt.savefig(self.store_path + 'plot/average_sum_rate.png')
         plt.cla()
 
         print()
         print('###########################################################')
         print('Metrics\t\t\tLast Episode\tMax Values Reached')
         print('###########################################################')
-        print('SSR (bits/s/Hz)\t\t{:.2f}\t\t{:.2f}'.format(average_sum_secrecy_rate[-1], max(average_sum_secrecy_rate)))
+        print('Sum Rate (bits/s/Hz)\t\t{:.2f}\t\t{:.2f}'.format(average_sum_rate[-1], max(average_sum_rate)))
         
+
+        ###############################
+        # GAP 4: Plot Average Minimum User Rate (Fairness Metric)
+        ###############################
+        fig = plt.figure('average_min_rate')
+        
+        avg_min_rate_per_ep = []
+        
+        # Iterate through all episodes
+        idx_start = 0
+        for i in range(self.ep_num):
+            steps_in_ep = step_num_per_episode[i]
+            idx_end = idx_start + steps_in_ep
+            
+            # Calculate Average Rate for EACH User in this episode
+            user_avg_rates = []
+            for u in range(self.user_num):
+                # Extract this user's data for the current episode
+                u_data = self.all_steps['user_capacity'][u][idx_start:idx_end]
+                
+                # Compute mean rate for this user
+                if len(u_data) > 0:
+                    user_avg = sum(u_data) / len(u_data)
+                else:
+                    user_avg = 0
+                user_avg_rates.append(user_avg)
+            
+            # Find the MINIMUM among the users (The Fairness Bottleneck)
+            min_rate_this_ep = min(user_avg_rates)
+            avg_min_rate_per_ep.append(min_rate_this_ep)
+            
+            # Update index for next episode
+            idx_start = idx_end
+
+        # Plotting
+        plt.plot(range(len(avg_min_rate_per_ep)), avg_min_rate_per_ep)
+        plt.xlabel("Episodes (Ep)")
+        plt.ylabel("Average Minimum Rate (Fairness)")
+        plt.grid(True)
+        plt.savefig(self.store_path + 'plot/average_min_rate.png')
+        plt.cla()
+
+        print('Min Rate (bits/s/Hz)\t{:.2f}\t\t{:.2f}'.format(avg_min_rate_per_ep[-1], max(avg_min_rate_per_ep)))
 
         ###############################
         # plot secrecy energy efficient
@@ -290,19 +333,6 @@ class LoadAndPlot(object):
         plt.ylabel("User Capacity")
         plt.savefig(self.store_path + 'plot/user_capacity.png')
         plt.cla()
-
-        
-        ###############################
-        # plot attacker capacity
-        ###############################
-        fig = plt.figure('attaker_capacity')
-        for i in range(self.attacker_num):
-            plt.plot(range(len(self.all_steps['attaker_capacity'][i])), self.all_steps['attaker_capacity'][i], c=color_list[i])
-        plt.legend(['attacker_' + str(i) for i in range(self.attacker_num)])
-        plt.xlabel("Time Steps ($t$)")
-        plt.ylabel("Attack Capacity")
-        plt.savefig(self.store_path + 'plot/attaker_capacity.png')
-        plt.close('all')
         
         
         ###############################
@@ -316,7 +346,7 @@ class LoadAndPlot(object):
         # plot trajectory
         ###############################
         self.plot_trajectory()
-
+       
     
     def plot_one_RIS_element(self, index):
         """

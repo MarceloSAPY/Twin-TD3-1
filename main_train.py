@@ -7,7 +7,7 @@ import argparse
 # get argument from user
 parser = argparse.ArgumentParser()
 parser.add_argument('--drl', type = str, required = True, default='td3', help="which drl algo would you like to choose ['ddpg', 'td3']")
-parser.add_argument('--reward', type = str, required = True, default='see', help="which reward would you like to implement ['ssr', 'see']")
+parser.add_argument('--reward', type = str, required = True, default='see', help="which reward would you like to implement ['ssr', 'see', 'fair']")
 parser.add_argument('--seeds', type = int, required = False, default=None,  nargs='+', help="what seed(s) would you like to use for DRL 1 and 2, please provide in one or two int")
 parser.add_argument('--ep-num', type = int, required = False, default=300, help="how many episodes do you want to train your DRL")
 parser.add_argument('--trained-uav', default=False, action='store_true', help='use trained uav instead of retraining')
@@ -21,7 +21,7 @@ TRAINED_UAV = args.trained_uav
 
 # process the argument
 assert DRL_ALGO in ['ddpg', 'td3'], "drl must be ['ddpg', 'td3']"
-assert REWARD_DESIGN in ['ssr', 'see'], "reward must be ['ssr', 'see']"
+assert REWARD_DESIGN in ['ssr', 'see', 'fair'], "reward must be ['ssr', 'see', 'fair']"
 if SEEDS is not None:
     assert len(SEEDS) in [1, 2] and isinstance(SEEDS[0], int) and isinstance(SEEDS[-1], int), "seeds must be a list of 1 or 2 integer"
 
@@ -46,7 +46,7 @@ project_name = f'trained_uav/{DRL_ALGO}_{REWARD_DESIGN}' if TRAINED_UAV else f's
 
 system = MiniSystem(
     user_num=2,
-    RIS_ant_num=4,
+    RIS_ant_num=32,
     UAV_ant_num=4,
     if_dir_link=1,
     if_with_RIS=True,
@@ -85,7 +85,8 @@ agent_1_param_dic["layer4_size"] = 256
 agent_2_param_dic = {}
 agent_2_param_dic["alpha"] = 0.0001
 agent_2_param_dic["beta"] = 0.001
-agent_2_param_dic["input_dims"] = 3
+# NEW: Add user_num to the input dimensions
+agent_2_param_dic["input_dims"] = 3 + system.user_num
 agent_2_param_dic["tau"] = 0.001
 agent_2_param_dic["batch_size"] = 64
 agent_2_param_dic["n_actions"] = 2
@@ -211,7 +212,9 @@ while episode_cnt < episode_num:
             )
     else:
         observersion_1 = system.observe()
-    observersion_2 = list(system.UAV.coordinate)
+        # NEW: Append user capacities
+        
+    observersion_2 = list(system.UAV.coordinate) + [user.capacity for user in system.user_list]    
     if episode_cnt == 80:
         print("break point")
     while step_cnt < step_num:
@@ -242,7 +245,7 @@ while episode_cnt < episode_num:
                     set_pos_x=action_2[0],
                     set_pos_y=action_2[1]
                 )
-                new_state_2 = list(system.UAV.coordinate)
+                new_state_2 = list(system.UAV.coordinate) + [user.capacity for user in system.user_list]
             else:
                 new_state_1, reward, done, info = system.step(
                     action_0=action_2[0],
@@ -251,8 +254,8 @@ while episode_cnt < episode_num:
                     set_pos_x=action_2[0],
                     set_pos_y=action_2[1]
                 )
-                new_state_2 = list(system.UAV.coordinate)
-
+                new_state_2 = list(system.UAV.coordinate) + [user.capacity for user in system.user_list]
+            observersion_2 = new_state_2
             score_per_ep += reward
             # 4 store state pair into mem pool
             agent_1.remember(observersion_1, action_1, reward, new_state_1, int(done))
