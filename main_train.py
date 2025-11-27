@@ -12,16 +12,26 @@ parser.add_argument('--seeds', type = int, required = False, default=None,  narg
 parser.add_argument('--ep-num', type = int, required = False, default=300, help="how many episodes do you want to train your DRL")
 parser.add_argument('--trained-uav', default=False, action='store_true', help='use trained uav instead of retraining')
 
+# --- CORRECCIÓN EN main_train.py ---
+
 args = parser.parse_args()
 DRL_ALGO = args.drl
-REWARD_DESIGN = args.reward
+REWARD_DESIGN = args.reward  # <--- MANTÉN ESTO LIMPIO (ej. 'fair')
 SEEDS = args.seeds
 EPISODE_NUM = args.ep_num
 TRAINED_UAV = args.trained_uav
 
-# process the argument
+# Validaciones (Ahora sí pasarán si usas --reward fair)
 assert DRL_ALGO in ['ddpg', 'td3'], "drl must be ['ddpg', 'td3']"
 assert REWARD_DESIGN in ['ssr', 'see', 'fair'], "reward must be ['ssr', 'see', 'fair']"
+
+# ...
+
+# AQUÍ es donde agregas el sufijo para que la carpeta sea única, sin romper la lógica
+suffix = "_HRIS_Energy"
+project_name = f'trained_uav/{DRL_ALGO}_{REWARD_DESIGN}{suffix}' if TRAINED_UAV else f'scratch/{DRL_ALGO}_{REWARD_DESIGN}{suffix}'
+
+# ...
 if SEEDS is not None:
     assert len(SEEDS) in [1, 2] and isinstance(SEEDS[0], int) and isinstance(SEEDS[-1], int), "seeds must be a list of 1 or 2 integer"
 
@@ -45,12 +55,12 @@ step_num = 100
 project_name = f'trained_uav/{DRL_ALGO}_{REWARD_DESIGN}' if TRAINED_UAV else f'scratch/{DRL_ALGO}_{REWARD_DESIGN}'
 
 system = MiniSystem(
-    user_num=2,
+    user_num=4,
     RIS_ant_num=32,
     UAV_ant_num=4,
     if_dir_link=1,
     if_with_RIS=True,
-    if_move_users=True,
+    if_move_users=False,
     if_movements=True,
     reverse_x_y=(False, False),
     if_UAV_pos_state = True,
