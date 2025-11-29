@@ -201,8 +201,18 @@ class MiniSystem(object):
         reset UAV, users, beamforming matrix, reflecting coefficient
         """
         # 1 reset UAV
-        self.UAV.reset(coordinate=self.data_manager.read_init_location('UAV', 0))
+        #self.UAV.reset(coordinate=self.data_manager.read_init_location('UAV', 0))
+        #=================
+        # Keeping Z height from the original file read if available, otherwise default to 100.
+        # --- CORRECCIÓN AQUÍ: Usar np.array() ---
+        original_pos = self.data_manager.read_init_location('UAV', 0)
+        start_x = 0   
+        start_y = 25  
+        start_z = original_pos[2] if len(original_pos) > 2 else 100 
         
+        # CAMBIO: [ ... ]  --->  np.array([ ... ])
+        self.UAV.reset(coordinate=np.array([start_x, start_y, start_z]))
+        #=================
         # 2 reset users
         for i in range(self.user_num):
             rand_x = np.random.uniform(self.border[0][0], self.border[0][1])
@@ -365,7 +375,6 @@ class MiniSystem(object):
         # 1. Obtener Tasas (Fairness: Max-Min)
         # Usamos las tasas ya calculadas en step() para eficiencia
         rates = [user.capacity for user in self.user_list]
-
         rates = np.array(rates)
         #new
         min_rate = np.min(rates) if len(rates) > 0 else 0
@@ -417,22 +426,22 @@ class MiniSystem(object):
         #====OLD===== lambda=0.1 mantiene el castigo bajo control (~0.1).
         lambda_e = 0.1 
         
-        reward = min_rate - (lambda_e * (self.total_power / P_ref))
+        #  old reward = min_rate - (lambda_e * (self.total_power / P_ref))
         
         # -=======================================================-- 
         # NUEVA DEFINICIÓN DE RECOMPENSA (HÍBRIDA) ---
         
         # 1. Incentivo de Cobertura Global (Sum Rate)
         # Ayuda al agente a encontrar usuarios al principio. Peso bajo.
-        w_sum = 0.1 
+        w_sum = 1.0 #0.1 
         
         # 2. Incentivo de Equidad (Min Rate)
         # El objetivo real. Peso alto para dominar al final.
-        w_min = 10.0 
+        w_min = 20.0 
         
         # 3. Costo de Energía
         # Peso bajo para permitir exploración inicial
-        w_energy = 0.05 
+        w_energy = 0.001 
         
         # Fórmula Maestra:
         # Reward = (Un poco de Suma) + (Mucho de Mínimo) - (Poco de Energía)
