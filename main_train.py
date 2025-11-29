@@ -233,8 +233,15 @@ while episode_cnt < episode_num:
         # judge if pause the whole system
         if not system.render_obj.pause:
             # 2 choose action acoording to current state
-            action_1 = agent_1.choose_action(observersion_1, greedy=agent_1_param_dic["action_noise_factor"] * math.pow((1-episode_cnt / episode_num), 2))
-            action_2 = agent_2.choose_action(observersion_2, greedy=agent_2_param_dic["action_noise_factor"]* math.pow((1-episode_cnt / episode_num), 2))
+            #OLD action_1 = agent_1.choose_action(observersion_1, greedy=agent_1_param_dic["action_noise_factor"] * math.pow((1-episode_cnt / episode_num), 2))
+            #OLD action_2 = agent_2.choose_action(observersion_2, greedy=agent_2_param_dic["action_noise_factor"]* math.pow((1-episode_cnt / episode_num), 2))
+            # Asegura que siempre haya al menos un 5% de ruido para evitar estancamiento total
+            noise_decay = math.pow((1 - episode_cnt / episode_num), 2)
+            current_noise = max(0.05, agent_1_param_dic["action_noise_factor"] * noise_decay)
+            action_1 = agent_1.choose_action(observersion_1, greedy=current_noise)
+            current_noise2 = max(0.05, agent_2_param_dic["action_noise_factor"] * noise_decay)
+            action_2 = agent_2.choose_action(observersion_2, greedy=current_noise2)
+# Haz lo mismo para action_2
             if if_BS:
                 action_2[0]=0
                 action_2[1]=0
