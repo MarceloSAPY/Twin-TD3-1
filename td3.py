@@ -345,7 +345,9 @@ class Agent(object):
         target = []
         for j in range(self.batch_size):
             target.append(reward[j] + self.gamma*critic_value_[j]*done[j])
-        target = T.tensor(target).to(self.critic_1.device)
+        #target = T.tensor(target).to(self.critic_1.device)
+        target = target.clone().detach().to(self.critic_1.device)
+
         target = target.view(self.batch_size, 1)
         
         # here update the critic net using mse of (r + gamma * Q_argmax_a*(newstate, a*)) - Q(state, action)

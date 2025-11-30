@@ -98,7 +98,8 @@ class MiniSystem(object):
             'reward',
             'UAV_movement',
             'total_power',
-            'user_positions'])
+            'user_positions',
+            "RIS_position"])
         # 1 init UAV position and beamforming matrix
         #============================================================   
         # 1.1 init UAV position and beamforming matrix
@@ -126,10 +127,23 @@ class MiniSystem(object):
         self.UAV.G = np.mat(np.zeros((self.UAV.ant_num, user_num), dtype=complex))
         #============================================================
         # 1.2 init RIS
-        self.RIS = RIS(\
-        coordinate=self.data_manager.read_init_location('RIS', 0), \
-        coor_sys_z=self.data_manager.read_init_location('RIS_norm_vec', 0), \
-        ant_num=RIS_ant_num)
+        # Colocamos el RIS en el borde superior (y=50), centrado en X=0.
+        # Esto simula un RIS montado en una fachada o pared.
+        ris_pos = np.array([0, 50, 10]) 
+        # Vector Normal: Apunta hacia adentro del mapa (hacia -y)
+        # Esto es vital para la física de reflexión si usas modelos avanzados,
+        # pero visualmente ayuda a entender que "mira" hacia los usuarios.
+        ris_normal = np.array([0, -1, 0])
+        #self.RIS = RIS(\
+        #coordinate=self.data_manager.read_init_location('RIS', 0), \
+        #coor_sys_z=self.data_manager.read_init_location('RIS_norm_vec', 0), \
+        #ant_num=RIS_ant_num)
+        self.RIS = RIS(
+            coordinate=ris_pos, 
+            coor_sys_z=ris_normal, 
+            ant_num=RIS_ant_num
+        )
+        
         # ---------------------------------------------------------
         # CONFIGURACIÓN DEL HRIS (Basado en Nguyen et al., 2024)
         # --------------------------------------------------------- 
@@ -205,20 +219,37 @@ class MiniSystem(object):
         #=================
         # Keeping Z height from the original file read if available, otherwise default to 100.
         # --- CORRECCIÓN AQUÍ: Usar np.array() ---
-        original_pos = self.data_manager.read_init_location('UAV', 0)
-        start_x = 0   
-        start_y = 25  
-        start_z = original_pos[2] if len(original_pos) > 2 else 100 
+        #original_pos = self.data_manager.read_init_location('UAV', 0)
+        #start_x = 0   
+        #start_y = 25  
+        #start_z = original_pos[2] if len(original_pos) > 2 else 100 
         
         # CAMBIO: [ ... ]  --->  np.array([ ... ])
+        #   self.UAV.reset(coordinate=np.array([start_x, start_y, start_z]))
+
+        # Esto obliga al agente a decidir si acercarse al RIS o quedarse con los usuarios cercanos.
+        start_x = 0   
+        start_y = 0   # Inicio del mapa
+        start_z = 60 # Altura de vuelo
+        
         self.UAV.reset(coordinate=np.array([start_x, start_y, start_z]))
+        # ---------------------------------------
         #=================
         # 2 reset users
+        fixed_positions = [
+            np.array([-20, 5, 0]),   # Usuario 0
+            np.array([20, 45, 0]),   # Usuario 1
+            np.array([-10, 30, 0]),  # Usuario 2
+            np.array([5, 10, 0])     # Usuario 3
+        ]
         for i in range(self.user_num):
-            rand_x = np.random.uniform(self.border[0][0], self.border[0][1])
-            rand_y = np.random.uniform(self.border[1][0], self.border[1][1])
-            rand_z = 0
-            self.user_list[i].reset(coordinate=[rand_x, rand_y, rand_z])
+            # Usamos np.array explícitamente para evitar errores de resta
+            self.user_list[i].reset(coordinate=fixed_positions[i])
+        #for i in range(self.user_num):
+        #    rand_x = np.random.uniform(self.border[0][0], self.border[0][1])
+        #    rand_y = np.random.uniform(self.border[1][0], self.border[1][1])
+        #    rand_z = 0
+        #    self.user_list[i].reset(coordinate=[rand_x, rand_y, rand_z])
         
         # 3 Reset RIS
         self.RIS.Phi = np.mat(np.diag(np.ones(self.RIS.ant_num, dtype=complex)), dtype=complex)
@@ -504,6 +535,12 @@ class MiniSystem(object):
         for user in self.user_list:
             user_coords_flat.extend(user.coordinate)
         self.data_manager.store_data(user_coords_flat, 'user_positions')
+
+        # --- NUEVO: GUARDAR POSICIÓN DEL RIS ---
+        # Convertimos a lista para asegurarnos de que sea serializable
+        # self.RIS.coordinate es un np.array([0, 50, 10])
+        ris_pos_list = list(self.RIS.coordinate)
+        self.data_manager.store_data(ris_pos_list, 'RIS_position')
 
     def update_channel_capacity(self):
         """

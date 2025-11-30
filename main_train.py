@@ -82,7 +82,7 @@ agent_1_param_dic["alpha"] = 0.0001
 agent_1_param_dic["beta"] = 0.001
 agent_1_param_dic["input_dims"] = system.get_system_state_dim()
 agent_1_param_dic["tau"] = 0.001
-agent_1_param_dic["batch_size"] = 64
+agent_1_param_dic["batch_size"] =256 # 64
 agent_1_param_dic["n_actions"] = system.get_system_action_dim() - 2
 agent_1_param_dic["action_noise_factor"] = 0.1
 agent_1_param_dic["memory_max_size"] = int(5/5 * episode_num * step_num) #/2
@@ -98,9 +98,9 @@ agent_2_param_dic["beta"] = 0.001
 # NEW: Add user_num to the input dimensions
 agent_2_param_dic["input_dims"] = 3 + system.user_num
 agent_2_param_dic["tau"] = 0.001
-agent_2_param_dic["batch_size"] = 64
+agent_2_param_dic["batch_size"] = 256 #64
 agent_2_param_dic["n_actions"] = 2
-agent_2_param_dic["action_noise_factor"] = 0.5
+agent_2_param_dic["action_noise_factor"] =0.5 # 0.5
 agent_2_param_dic["memory_max_size"] = int(5/5 * episode_num * step_num) #/2
 agent_2_param_dic["agent_name"] = "UAV"
 agent_2_param_dic["layer1_size"] = 400
@@ -236,7 +236,9 @@ while episode_cnt < episode_num:
             #OLD action_1 = agent_1.choose_action(observersion_1, greedy=agent_1_param_dic["action_noise_factor"] * math.pow((1-episode_cnt / episode_num), 2))
             #OLD action_2 = agent_2.choose_action(observersion_2, greedy=agent_2_param_dic["action_noise_factor"]* math.pow((1-episode_cnt / episode_num), 2))
             # Asegura que siempre haya al menos un 5% de ruido para evitar estancamiento total
-            noise_decay = math.pow((1 - episode_cnt / episode_num), 2)
+            # old noise_decay = math.pow((1 - episode_cnt / episode_num), 2)
+            noise_decay = math.pow((1 - episode_cnt / episode_num), 3)
+            
             current_noise = max(0.05, agent_1_param_dic["action_noise_factor"] * noise_decay)
             action_1 = agent_1.choose_action(observersion_1, greedy=current_noise)
             current_noise2 = max(0.05, agent_2_param_dic["action_noise_factor"] * noise_decay)
