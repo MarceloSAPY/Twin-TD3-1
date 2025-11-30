@@ -80,11 +80,16 @@ class LoadAndPlot(object):
             except Exception as e:
                 print(f"Error leyendo datos de trayectoria: {e}")
 
-        # --- 4. DIBUJAR USUARIOS (CORRECCIÓN PARA 3 y 4) ---
-        # Definimos límites para generar posiciones aleatorias visuales si faltan en el Excel
-        # Coinciden con los bordes de tu env.py: x(-25,25), y(0,50)
-        x_min, x_max = -20, 20
-        y_min, y_max = 5, 45
+        # --- 4. DIBUJAR USUARIOS ---
+        # Límites para generar posiciones aleatorias si faltan en el Excel
+        # Coinciden con los bordes de env.py: x(-200,200), y(0,400)
+        # Fixed positions from env.py (lines 239-244):
+        # User 0: [-180, 50, 0]   - Far Left, Low
+        # User 1: [180, 380, 0]   - Far Right, High (Near RIS)
+        # User 2: [-150, 350, 0]  - Far Left, High
+        # User 3: [50, 20, 0]     - Center, Low
+        x_min, x_max = -200, 200
+        y_min, y_max = 0, 400
         
         # Semilla fija para que los usuarios no "bailen" cada vez que sacas la gráfica
         np.random.seed(42) 
@@ -114,9 +119,9 @@ class LoadAndPlot(object):
         plt.legend(loc='upper right', fontsize=8, framealpha=0.9)
         plt.grid(True, which='both', linestyle=':', alpha=0.6)
         
-        # Ajustar límites (Expandidos un poco para ver todo)
-        plt.xlim(-10, 60) 
-        plt.ylim(-30, 30) 
+        # Ajustar límites según env.py border: x(-200,200), y(0,400)
+        plt.xlim(-50, 450)  # y-axis in plot (border[1])
+        plt.ylim(-220, 220) # x-axis in plot (border[0]) 
         
         plt.xlabel('y (m)') 
         plt.ylabel('x (m)')

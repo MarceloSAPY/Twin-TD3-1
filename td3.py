@@ -342,13 +342,12 @@ class Agent(object):
         
         critic_value_ = T.min(critic_value_1_, critic_value_2_)
         
-        target = []
-        for j in range(self.batch_size):
-            target.append(reward[j] + self.gamma*critic_value_[j]*done[j])
-        #target = T.tensor(target).to(self.critic_1.device)
-        target = target.clone().detach().to(self.critic_1.device)
-
-        target = target.view(self.batch_size, 1)
+        # Vectorized target calculation (Faster and correct type)
+        # Reshape reward and done to (batch_size, 1) to match critic_value_ shape
+        target = reward.view(-1, 1) + self.gamma * critic_value_ * done.view(-1, 1)
+        
+        # Detach target from graph (Target network values are fixed labels)
+        target = target.detach()
         
         # here update the critic net using mse of (r + gamma * Q_argmax_a*(newstate, a*)) - Q(state, action)
         self.critic_1.train()

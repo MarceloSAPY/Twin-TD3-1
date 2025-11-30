@@ -69,7 +69,7 @@ class MiniSystem(object):
     def __init__(self, UAV_num = 1, RIS_num = 1, user_num = 1, fre = 28e9, \
                  RIS_ant_num = 32, UAV_ant_num=8, if_dir_link = 1, if_with_RIS = True, \
                  if_move_users = False, if_movements = True, reverse_x_y = (True, True), \
-                 if_UAV_pos_state = True, reward_design = 'ssr', project_name = None, step_num=100):
+                 if_UAV_pos_state = True, reward_design = 'ssr', project_name = None, step_num=400):
         self.if_dir_link = if_dir_link
         self.if_with_RIS = if_with_RIS
         self.if_move_users = if_move_users
@@ -79,7 +79,7 @@ class MiniSystem(object):
         # el código lo convierte en -1.0 (Moverse a la izquierda en lugar de a la derecha).
         self.reverse_x_y = reverse_x_y
         self.user_num = user_num
-        self.border = [(-25,25), (0, 50)]
+        self.border = [(-200,200), (0, 400)]
         # --- NEW: Hybrid RIS Parameters () ---
         # 1. Noise Power Setup (Based on Nguyen et al., 2024, Table 1 & Sec V)
         # User noise power: -80 dBm
@@ -106,7 +106,7 @@ class MiniSystem(object):
         self.UAV = UAV(
             coordinate=self.data_manager.read_init_location('UAV', 0), 
             ant_num= UAV_ant_num, 
-            max_movement_per_time_slot=0.25)
+            max_movement_per_time_slot=1.5)
         
         # --- CORRECCIÓN: FÍSICA REALISTA Y COMPATIBLE ---
         
@@ -129,7 +129,7 @@ class MiniSystem(object):
         # 1.2 init RIS
         # Colocamos el RIS en el borde superior (y=50), centrado en X=0.
         # Esto simula un RIS montado en una fachada o pared.
-        ris_pos = np.array([0, 50, 10]) 
+        ris_pos = np.array([0, 400, 20]) 
         # Vector Normal: Apunta hacia adentro del mapa (hacia -y)
         # Esto es vital para la física de reflexión si usas modelos avanzados,
         # pero visualmente ayuda a entender que "mira" hacia los usuarios.
@@ -189,7 +189,10 @@ class MiniSystem(object):
 
         # 1.7 step_num
         self.step_num = step_num
-
+        # --- TDMA MEMORY ---
+        # Para la Opción B: Rastrear la tasa promedio acumulada de cada usuario
+        self.user_rates_accumulated = np.zeros(self.user_num)
+        self.active_user_k = 0 # El usuario que tiene el turno actual
         # =============================------------------------------------------
         # 2.init channel
         # UAV -> RIS (Rx: RIS, Tx: UAV)
@@ -229,7 +232,7 @@ class MiniSystem(object):
 
         # Esto obliga al agente a decidir si acercarse al RIS o quedarse con los usuarios cercanos.
         start_x = 0   
-        start_y = 0   # Inicio del mapa
+        start_y = 200   # Inicio del mapa
         start_z = 60 # Altura de vuelo
         
         self.UAV.reset(coordinate=np.array([start_x, start_y, start_z]))
@@ -237,14 +240,18 @@ class MiniSystem(object):
         #=================
         # 2 reset users
         fixed_positions = [
-            np.array([-20, 5, 0]),   # Usuario 0
-            np.array([20, 45, 0]),   # Usuario 1
-            np.array([-10, 30, 0]),  # Usuario 2
-            np.array([5, 10, 0])     # Usuario 3
+            np.array([-180, 50, 0]),   # User 0
+            np.array([180, 380, 0]),   # User 1
+            np.array([-150, 350, 0]),  # User 2
+            np.array([50, 20, 0])      # User 3
         ]
+     # Safety check for user_num
         for i in range(self.user_num):
-            # Usamos np.array explícitamente para evitar errores de resta
-            self.user_list[i].reset(coordinate=fixed_positions[i])
+            if i < len(fixed_positions):
+                self.user_list[i].reset(coordinate=fixed_positions[i])
+            else:
+             # Fallback for extra users
+                self.user_list[i].reset(coordinate=np.array([0, 0, 0]))
         #for i in range(self.user_num):
         #    rand_x = np.random.uniform(self.border[0][0], self.border[0][1])
         #    rand_y = np.random.uniform(self.border[1][0], self.border[1][1])
@@ -283,34 +290,40 @@ class MiniSystem(object):
             G_init[:, k] = (np.sqrt(power_per_user) * w_k).flatten()
         
         self.UAV.G = np.mat(G_init, dtype=complex)
+        # [INICIO BLOQUE FALTANTE]
+        # ==========================================
+        # FASE 2: Lógica de Selección TDMA (Opción B: Max-Min Demand)
+        # ==========================================
+        # Decidir quién transmite en ESTE paso basado en la historia
         
-        # 5 Update capacities
-        self.update_channel_capacity()
-        ###################################### -------------------------------------------------------
-
-    def step(self, action_0 = 0, action_1 = 0, G = 0, Phi = 0, set_pos_x = 0, set_pos_y = 0):
-        """
-        Paso de simulación: Movimiento -> Física -> Recompensa -> Guardado -> Observación
-        """
-        # 0. Actualizar reloj de renderizado
+        # Si estamos al principio o hay empate de ceros, aleatorio para romper simetría
+        if np.sum(self.user_rates_accumulated) == 0:
+             self.active_user_k = np.random.randint(0, self.user_num)
+        else:
+             # El usuario con MENOR tasa acumulada tiene prioridad
+             self.active_user_k = np.argmin(self.user_rates_accumulated)
+        
+        self.user_rates_accumulated = np.zeros(self.user_num)        
+        self.active_user_k = np.random.randint(0, self.user_num) # Comenta esto       
+        self.update_channel_capacity()   
+        # --- TDMA MEMORY ---
+        # Importante: En el paso 0, elegimos al azar para arrancar sin sesgos
+        #self.active_user_k = 3 # ¡Fuerza al usuario cercano!
+    
+    def step(self, action_0=0, action_1=0, G=0, Phi=0, set_pos_x=0, set_pos_y=0):
+        # 0. Actualizar reloj
         self.render_obj.t_index += 1
-
-        # seguridad: aseguramos current_velocity definido
         self.current_velocity = getattr(self, 'current_velocity', 0.0)
 
-        # 1. Mover Usuarios (Si aplica)
+        # 1. Movimiento Usuarios (Si aplica)
         if self.if_move_users:
-            self.user_list[0].update_coordinate(0.2, -1/2 * math.pi)
-            self.user_list[1].update_coordinate(0.2, -1/2 * math.pi)
-            self.user_list[2].update_coordinate(0.2, -1/2 * math.pi)
-            self.user_list[3].update_coordinate(0.2, -1/2 * math.pi)
+            for user in self.user_list:
+                user.update_coordinate(0.2, -0.5 * math.pi)
 
-        # 2. Mover UAV (Acción del Agente)
+        # 2. Movimiento UAV
         if self.if_movements:
             move_x = action_0 * self.UAV.max_movement_per_time_slot
             move_y = action_1 * self.UAV.max_movement_per_time_slot
-
-            # Calcular velocidad para consumo de energía
             v_t = (move_x ** 2 + move_y ** 2) ** 0.5
             self.current_velocity = v_t
 
@@ -321,168 +334,101 @@ class MiniSystem(object):
             self.UAV.coordinate[1] += move_y
             self.data_manager.store_data([move_x, move_y], 'UAV_movement')
         else:
-            # Lógica de posición fija (si aplica)
-            set_pos_x = map_to(set_pos_x, (-1, 1), self.border[0])
-            set_pos_y = map_to(set_pos_y, (-1, 1), self.border[1])
-            self.UAV.coordinate[0] = set_pos_x
-            self.UAV.coordinate[1] = set_pos_y
-            # asegurar velocidad cero si no se mueve
             self.current_velocity = 0.0
 
-        # 3. Actualizar Canales (CSI)
-        for h in self.h_U_k + self.h_R_k:
-            h.update_CSI()
+        # 3. Actualizar Canales
+        for h in self.h_U_k + self.h_R_k: h.update_CSI()
+        if self.if_with_RIS: self.H_UR.update_CSI()
 
-        # !!! test to make direct link zero
-        if self.if_dir_link == 0:
-            for h in self.h_U_k:
-                h.channel_matrix = np.mat(np.zeros(shape=np.shape(h.channel_matrix)), dtype=complex)
-
-        if self.if_with_RIS == False:
-            self.H_UR.channel_matrix = np.mat(np.zeros((self.RIS.ant_num, self.UAV.ant_num)), dtype=complex)
+        # --- SELECCIÓN TDMA ---
+        if np.sum(self.user_rates_accumulated) == 0:
+             self.active_user_k = np.random.randint(0, self.user_num)
         else:
-            self.H_UR.update_CSI()
+             self.active_user_k = np.argmin(self.user_rates_accumulated)
 
-        # 4. Aplicar Acciones de Beamforming y RIS
-        # Beamforming UAV: validar entrada G
+        # 4. Acciones Beamforming/RIS
         if isinstance(G, (list, tuple, np.ndarray)):
             self.UAV.G = convert_list_to_complex_matrix(G, (self.UAV.ant_num, self.user_num)) * math.pow(self.power_factor, 0.5)
-        else:
-            # mantener G actual si la acción no es válida
-            pass
-
-        # Coeficientes RIS (Hybrid)
+        
         if self.if_with_RIS:
             self.RIS.Phi = convert_list_to_complex_diag(Phi, self.RIS.ant_num)
-
-            # Escalar Elementos Activos (HRIS Amplification)
+            # HRIS scaling
             N_a = min(getattr(self, 'num_active_elements', 4), self.RIS.ant_num)
             a_max = getattr(self, 'a_max', 100)
-
-            # convertir diagonal a array complejo seguro
             phi_diag = np.array(np.diag(self.RIS.Phi), dtype=complex).copy()
-            for i in range(N_a):
-                phi_diag[i] = phi_diag[i] * a_max
+            for i in range(N_a): phi_diag[i] *= a_max
             self.RIS.Phi = np.mat(np.diag(phi_diag))
 
-        # 5. Actualizar Capacidades (Física del enlace)
+        # 5. Física y Capacidades
         self.update_channel_capacity()
 
-        # 6. Calcular Recompensa (CRÍTICO: Esto actualiza self.total_power)
-        reward = 0
-        if self.reward_design == 'fair':
-            reward = self.reward()
-        elif self.reward_design == 'see':
-            # legacy: proteger uso de v_t
-            v_local = getattr(self, 'current_velocity', 0.0)
-            energy = get_energy_consumption(v_local)
-            energy -= ENERGY_MIN
-            energy /= max((ENERGY_MAX - ENERGY_MIN), 1e-12)
-            energy_penalty = -1 * 0.1 * abs(reward) * energy 
-            if reward > 0:
-                reward += energy_penalty
+        # --- CORRECCIÓN CRÍTICA: ACUMULAR ANTES DEL REWARD ---
+        # Actualizamos la memoria histórica AHORA para que el reward lo vea
+        for i, user in enumerate(self.user_list):
+            self.user_rates_accumulated[i] += user.capacity
 
-        # 7. GUARDAR ESTADO (UNA SOLA VEZ, AQUÍ)
+        # 6. Calcular Recompensa
+        reward = self.reward() # Ahora reward() verá los acumulados actualizados
+
+        # 7. Guardar y Observar
         self.store_current_system_sate()
-
-        # 8. Obtener Nuevo Estado (Para la IA)
         new_state = self.observe()
 
-        # 9. Verificar Límites (Boundary Check)
+        # 8. Boundary Check
         done = False
         x, y = self.UAV.coordinate[0:2]
         if x < self.border[0][0] or x > self.border[0][1] or \
            y < self.border[1][0] or y > self.border[1][1]:
             done = True
-            reward = -10  # Penalización fuerte por salir
+            reward = -10 
 
-        # Guardar reward final
         self.data_manager.store_data([reward], 'reward')
-
         return new_state, reward, done, []
 
 # In env.py
     def reward(self):
-        # 1. Obtener Tasas (Fairness: Max-Min)
-        # Usamos las tasas ya calculadas en step() para eficiencia
-        rates = [user.capacity for user in self.user_list]
-        rates = np.array(rates)
-        #new
-        min_rate = np.min(rates) if len(rates) > 0 else 0
-        #OLD  min_rate = np.min(rates) if rates else 0
-        #new
-        sum_rate = np.sum(rates) if len(rates) > 0 else 0
-        # --- CÁLCULO DE ENERGÍA ---
-        dt = delta_time
+        # --- LÓGICA MAX-MIN PARA TDMA ---
         
-        # A) Energía de Vuelo (UAV - Dominante ~1400 W)
-        # Aseguramos que current_velocity esté actualizada
+        # 1. Calcular las tasas promedio HASTA AHORA (incluyendo este paso)
+        # self.render_obj.t_index es el paso actual (1, 2, ... 400)
+        current_step = max(1, self.render_obj.t_index)
+        
+        # Tasas promedio históricas
+        avg_rates = self.user_rates_accumulated / current_step
+        
+        # El objetivo es maximizar el MÍNIMO de estos promedios
+        min_avg_rate = np.min(avg_rates)
+        sum_avg_rate = np.sum(avg_rates)
+
+        # --- CÁLCULO DE ENERGÍA (Igual que antes) ---
+        dt = delta_time
         v_t = getattr(self, 'current_velocity', 0.0) 
         e_fly = get_energy_consumption(v_t) 
-        
-        # B) Energía de Transmisión (UAV RF ~1-2 W)
-        # .real elimina residuos imaginarios por error numérico
         p_trans_watts = np.trace(self.UAV.G * self.UAV.G.H).real
         e_trans = p_trans_watts * dt
         
-        # C) Energía del HRIS (Estática + Dinámica)
-        # Extraemos coeficientes diagonales del RIS
-        phi_vec = np.diag(self.RIS.Phi)
-        # phi_vec puede ser matriz (1, N), aseguramos array plano 1D
-        phi_vec = np.array(phi_vec).flatten() 
-        
-        # Potencia Estática (Circuitos de control)
-        P_STATIC_PER_ELEMENT = 0.01 # 10mW
+        # Energía RIS
+        phi_vec = np.array(np.diag(self.RIS.Phi)).flatten() 
+        P_STATIC_PER_ELEMENT = 0.01 
         p_ris_static = self.RIS.ant_num * P_STATIC_PER_ELEMENT
-        
-        # Potencia Dinámica (Amplificación RF)
-        P_IN_APPROX = 1e-8 # Potencia entrada estimada (-50 dBm)
+        P_IN_APPROX = 1e-8 
         AMPLIFIER_EFFICIENCY = 0.3
-        
-        # Consumo = (Salida RF) / Eficiencia
         p_ris_dynamic = (np.sum(np.abs(phi_vec)**2) * P_IN_APPROX) / AMPLIFIER_EFFICIENCY
-        
         e_ris = (p_ris_static + p_ris_dynamic) * dt
 
-        # --- TOTALES ---
         total_energy = e_fly + e_trans + e_ris
-        self.total_power = total_energy / dt # Watts (Instantánea)
+        self.total_power = total_energy / dt 
 
-        # --- DEFINICIÓN DE RECOMPENSA (Fairness penalizada por Energía) ---
-        # Referencia: 1500W es el consumo pico aprox del UAV en hover.
+        # --- RECOMPENSA FINAL ---
         P_ref = 1500.0 
-        
-        # Lambda: Peso del castigo energético.
-        # min_rate ~ [0.5, 5.0]. Normalized Power ~ [0.9, 1.1].
-        #====OLD===== lambda=0.1 mantiene el castigo bajo control (~0.1).
-        lambda_e = 0.1 
-        
-        #  old reward = min_rate - (lambda_e * (self.total_power / P_ref))
-        
-        # -=======================================================-- 
-        # NUEVA DEFINICIÓN DE RECOMPENSA (HÍBRIDA) ---
-        
-        # 1. Incentivo de Cobertura Global (Sum Rate)
-        # Ayuda al agente a encontrar usuarios al principio. Peso bajo.
-        w_sum = 1.0 #0.1 
-        
-        # 2. Incentivo de Equidad (Min Rate)
-        # El objetivo real. Peso alto para dominar al final.
         w_min = 20.0 
+        w_energy = 0.05 # Un poco más alto para que importe
         
-        # 3. Costo de Energía
-        # Peso bajo para permitir exploración inicial
-        w_energy = 0.001 
+        # Usamos min_avg_rate en lugar de min_rate instantáneo
+        reward = (w_min * min_avg_rate) - (w_energy * (self.total_power / P_ref))
         
-        # Fórmula Maestra:
-        # Reward = (Un poco de Suma) + (Mucho de Mínimo) - (Poco de Energía)
-        reward = (w_sum * sum_rate) + (w_min * min_rate) - (w_energy * (self.total_power / P_ref))
-
-        # Clip de Seguridad (Evita gradientes explosivos negativos)
-        # Asegúrate de definir self.REWARD_MIN_CLIP = -5 en __init__
-        #clip_val = getattr(self, 'REWARD_MIN_CLIP', -5)
+        # Clip de Seguridad
         clip_val = getattr(self, 'REWARD_MIN_CLIP', -5)
-        
         if reward < clip_val:
             reward = clip_val
             
@@ -591,41 +537,42 @@ class MiniSystem(object):
         return h_combined
 
     def calculate_capacity_of_user_k(self, k):
-        # Standard Shannon Capacity: B * log2(1 + SINR)
-        # Note: Your code uses log10, which is non-standard for bits (log2) or nats (ln).
-         # Note: The following implementation uses log2 for capacity calculation and computes SINR using the combined channel and noise model.    
+        """
+        Calcula la capacidad bajo protocolo TDMA (Sin interferencia inter-usuario).
+        Si el usuario k NO es el usuario activo, su capacidad es 0.
+        """
+        # 1. Regla de Oro TDMA: Si no es tu turno, no recibes nada.
+        if k != self.active_user_k:
+            return 0.0
+
+        # 2. Física del Canal (Solo para el usuario activo)
         noise_power = self.user_list[k].noise_power
-        h_U_k = self.h_U_k[k].channel_matrix  # shape (1, M)
-        h_R_k = self.h_R_k[k].channel_matrix  # shape (1, N)
-        Phi = self.RIS.Phi                    # shape (N, N)
-        H_UR = self.H_UR.channel_matrix       # shape (N, M)
+        
+        # Obtenemos los canales combinados (ya calculados en update_channel_capacity)
+        # Nota: calculate_comprehensive... se llama ANTES de esto en update_channel_capacity
+        # Pero aquí recalculamos el SINR usando los punteros directos para claridad.
+        h_U_k = self.h_U_k[k].channel_matrix
+        h_R_k = self.h_R_k[k].channel_matrix
+        
+        # Canal Total = Directo + Reflejado
         H_combined = h_U_k + h_R_k @ self.RIS.Phi @ self.H_UR.channel_matrix
-        #H_combined = h_U_k + h_R_k @ Phi @ H_UR  # shape (1, M)
-    
+        
+        # 3. Beamforming: Solo nos importa la columna k de la matriz G
+        # (El agente sigue generando G completa, pero físicamente solo "apuntamos" una columna)
         G_k = self.UAV.G[:, k]
-    
-        # Signal Power
+        
+        # 4. Potencia de Señal
         signal = (np.abs(H_combined @ G_k)**2).item()
-    
-        # Interference Power (Sum of other users' signals)
-        interference = 0
-        for j in range(len(self.user_list)):
-            if j != k:
-                # Calculate combined channel for user j
-                h_U_j = self.h_U_k[j].channel_matrix  # shape (1, M)
-                h_R_j = self.h_R_k[j].channel_matrix  # shape (1, N)
-        # SINR
-        # Ensure all terms are in mW for consistency
-        sinr = signal / (interference + dB_to_normal(noise_power))
-    
-        # Return rate (using log2 for bits/s/Hz)
-        return math.log2(1 + sinr)
+        
+        # 5. SINR -> SNR (En TDMA la interferencia de otros usuarios es 0)
+        interference = 0 
+        
+        snr = signal / (dB_to_normal(noise_power)) # Sin interferencia
+        
+        # 6. Capacidad de Shannon
+        return math.log2(1 + snr)
             
-        # SINR
-        #sinr = signal / (interference + dB_to_normal(noise_power) * 1e-3)
-        # Return rate (using log2 for bits/s/Hz, which is standard for channel capacity in bits per second per Hz)
-        #return math.log2(1 + sinr)
-        #return math.log2(1 + sinr)
+        
 
     def calculate_secure_capacity_of_user_k(self, k):
         # Not used when optimizing fairness; return 0 to keep compatibility
@@ -652,38 +599,47 @@ class MiniSystem(object):
 
     def observe(self):
         """
-        used in function main to get current state
-        The state now includes:
-        1. Channel information (real + imag parts)
-        2. UAV position (optional)
-        3. User Rates (CRITICAL for Fairness/Max-Min optimization)
+        Observación Normalizada para DRL estable.
         """
-        # 1. Construct Channel State (Existing Logic)
+        # 1. Información de Canal (Escalada)
+        # Multiplicamos por 1 millón para que los valores estén en rango [-1, 1] aprox
+        CHANNEL_SCALE = 1e6 
+        
         comprehensive_channel_elements_list = [] 
-        targets = self.user_list # (for pure EE)
+        targets = self.user_list 
         
         for entity in targets:
-            tmp_list = list(np.array(np.reshape(entity.comprehensive_channel, (1,-1)))[0])
+            # Obtenemos el vector complejo
+            raw_channel = np.array(np.reshape(entity.comprehensive_channel, (1,-1)))[0]
+            
+            # Escalamos
+            scaled_channel = raw_channel * CHANNEL_SCALE
+            
+            # Separamos Real e Imaginario
+            tmp_list = list(scaled_channel)
             comprehensive_channel_elements_list += list(np.real(tmp_list)) + list(np.imag(tmp_list)) 
         
-        # 2. Construct Position State (Existing Logic)
+        # 2. Información de Posición (Normalizada)
+        # Mapa X: [-200, 200] -> Dividir por 200
+        # Mapa Y: [0, 400]    -> Dividir por 400
+        # Mapa Z: [0, 100]    -> Dividir por 100
         UAV_position_list = []
         if self.if_UAV_pos_state:
-            UAV_position_list = list(self.UAV.coordinate)
+            x, y, z = self.UAV.coordinate
+            norm_x = x / 200.0
+            norm_y = y / 400.0
+            norm_z = z / 100.0
+            UAV_position_list = [norm_x, norm_y, norm_z]
 
-        # 3. Construct Rate State (NEW LOGIC)
-        # The agent needs to know the current performance to maximize the minimum rate
+        # 3. Información de Tasas (Ya suelen estar entre 0 y 10, ok)
         rates_list = []
         for user in self.user_list:
-            # Check if capacity is None or not set yet, default to 0
-            val = user.capacity
+            val = user.capacity if user.capacity is not None else 0.0
             rates_list.append(val)
 
-        # Return combined state
-        # State structure:
-        # [comprehensive_channel_elements_list (real + imag for each user), UAV_position_list (x, y, z), rates_list (capacity for each user)]
+        # Retornamos la lista plana
         return comprehensive_channel_elements_list + UAV_position_list + rates_list
-
+        
     def get_system_state_dim(self):
         """
         function used in main function to get the dimention of states

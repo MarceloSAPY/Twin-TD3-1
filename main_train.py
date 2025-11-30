@@ -10,6 +10,7 @@ parser.add_argument('--drl', type = str, required = True, default='td3', help="w
 parser.add_argument('--reward', type = str, required = True, default='see', help="which reward would you like to implement ['ssr', 'see', 'fair']")
 parser.add_argument('--seeds', type = int, required = False, default=None,  nargs='+', help="what seed(s) would you like to use for DRL 1 and 2, please provide in one or two int")
 parser.add_argument('--ep-num', type = int, required = False, default=300, help="how many episodes do you want to train your DRL")
+parser.add_argument('--step_num', type=int, default=400)
 parser.add_argument('--trained-uav', default=False, action='store_true', help='use trained uav instead of retraining')
 
 # --- CORRECCIÓN EN main_train.py ---
@@ -50,7 +51,7 @@ import torch
 # 1 init system model
 episode_num = EPISODE_NUM # recommend to be 300
 episode_cnt = 0
-step_num = 100
+step_num = 400
 
 project_name = f'trained_uav/{DRL_ALGO}_{REWARD_DESIGN}' if TRAINED_UAV else f'scratch/{DRL_ALGO}_{REWARD_DESIGN}'
 
