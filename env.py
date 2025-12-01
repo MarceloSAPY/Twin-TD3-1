@@ -218,98 +218,91 @@ class MiniSystem(object):
         """
         reset UAV, users, beamforming matrix, reflecting coefficient
         """
-        # 1 reset UAV
-        #self.UAV.reset(coordinate=self.data_manager.read_init_location('UAV', 0))
-        #=================
-        # Keeping Z height from the original file read if available, otherwise default to 100.
-        # --- CORRECCIÓN AQUÍ: Usar np.array() ---
-        #original_pos = self.data_manager.read_init_location('UAV', 0)
-        #start_x = 0   
-        #start_y = 25  
-        #start_z = original_pos[2] if len(original_pos) > 2 else 100 
-        
-        # CAMBIO: [ ... ]  --->  np.array([ ... ])
-        #   self.UAV.reset(coordinate=np.array([start_x, start_y, start_z]))
-
-        # Esto obliga al agente a decidir si acercarse al RIS o quedarse con los usuarios cercanos.
+        # 1. Reset UAV (Centro, Altura de vuelo)
         start_x = 0   
-        start_y = 200   # Inicio del mapa
-        start_z = 60 # Altura de vuelo
-        
+        start_y = 200 # Inicio Seguro (Centro Y)
+        start_z = 60 
         self.UAV.reset(coordinate=np.array([start_x, start_y, start_z]))
-        # ---------------------------------------
-        #=================
-        # 2 reset users
+        
+        # 2. Reset Users (Posiciones Fijas Hell Scenario)
         fixed_positions = [
             np.array([-180, 50, 0]),   # User 0
             np.array([180, 380, 0]),   # User 1
             np.array([-150, 350, 0]),  # User 2
             np.array([50, 20, 0])      # User 3
         ]
-     # Safety check for user_num
+        
         for i in range(self.user_num):
             if i < len(fixed_positions):
                 self.user_list[i].reset(coordinate=fixed_positions[i])
             else:
-             # Fallback for extra users
                 self.user_list[i].reset(coordinate=np.array([0, 0, 0]))
-        #for i in range(self.user_num):
-        #    rand_x = np.random.uniform(self.border[0][0], self.border[0][1])
-        #    rand_y = np.random.uniform(self.border[1][0], self.border[1][1])
-        #    rand_z = 0
-        #    self.user_list[i].reset(coordinate=[rand_x, rand_y, rand_z])
         
-        # 3 Reset RIS
-        self.RIS.Phi = np.mat(np.diag(np.ones(self.RIS.ant_num, dtype=complex)), dtype=complex)
-        
-        # 4 Update CSI (CRITICAL before MRT)
+        # 3. Actualizar CSI (Canales) INICIALMENTE
+        # Necesitamos los canales AHORA para calcular la fase inteligente
         self.render_obj.t_index = 0
         self.H_UR.update_CSI()
         for h in self.h_U_k + self.h_R_k:
             h.update_CSI()
+
+        # 4. Inicialización Inteligente del RIS (PASO 2)
+        # Objetivo: Alinear fases para el Usuario 1 (Lejos, cerca del RIS)
+        # Esto le da una "pista" al agente de cómo usar el RIS.
+        target_user_idx = 1 
         
-        # --- INICIALIZACIÓN MRT (Maximum Ratio Transmission) ---
-        # G_Pmax ya está definido en __init__ como constante física (1 Watt = 30 dBm)
-        # No lo recalculamos aquí; solo lo usamos como presupuesto de potencia
+        # Canales relevantes
+        # H_UR: (N_ris, N_uav) -> Canal UAV a RIS
+        # h_R_k: (1, N_ris) -> Canal RIS a Usuario
+        H_UR = self.H_UR.channel_matrix
+        h_R_k = self.h_R_k[target_user_idx].channel_matrix
+        
+        # Calculamos el camino en cascada "promedio" para cada elemento del RIS
+        # Simplificación: Asumimos que la señal viene de la antena 0 del UAV
+        # Fase requerida = -(Fase(H_UR) + Fase(h_R_k))
+        # Esto cancela la fase del canal, alineando la señal (Constructive Interference)
+        
+        # Extraemos vector columna del canal de entrada (UAV->RIS)
+        # Sumamos las contribuciones de todas las antenas del UAV (o solo la primera)
+        h_ur_eff = np.sum(H_UR, axis=1) # (N_ris, 1) - Suma compleja
+        
+        # Vector combinado (elemento a elemento)
+        cascade_channel = np.array(h_ur_eff).flatten() * np.array(h_R_k).flatten()
+        
+        # Fase conjugada (para cancelar)
+        initial_phases = -np.angle(cascade_channel)
+        
+        # Construir matriz diagonal
+        phi_diag = [cmath.exp(1j * p) for p in initial_phases]
+        self.RIS.Phi = np.mat(np.diag(phi_diag), dtype=complex)
+
+        # 5. MRT Initialization (Esto se adapta a la nueva Phi automáticamente)
         power_per_user = self.UAV.G_Pmax / self.user_num
         G_init = np.zeros((self.UAV.ant_num, self.user_num), dtype=complex)
         
+        # Calculamos MRT considerando el RIS ya alineado
         for k in range(self.user_num):
-            h_val = self.h_U_k[k].channel_matrix
-            norm_h = np.linalg.norm(h_val)
+            h_U_k = self.h_U_k[k].channel_matrix
+            h_R_k_mat = self.h_R_k[k].channel_matrix
             
-            if norm_h > 1e-10:
-                w_k = h_val / norm_h
-            else:
-                w_k = np.mat(np.ones((self.UAV.ant_num, 1), dtype=complex)) / np.sqrt(self.UAV.ant_num)
+            # Canal Compuesto
+            h_reflected = h_R_k_mat @ self.RIS.Phi @ H_UR
+            h_total = h_U_k + h_reflected
             
-            # Ensure w_k is column vector
-            if w_k.shape[0] == 1:
-                w_k = w_k.H
+            w_k = h_total.H
+            norm_w = np.linalg.norm(w_k)
+            if norm_w > 1e-10:
+                w_k = w_k / norm_w
             
-            #G_init[:, k] = np.sqrt(power_per_user) * w_k
             G_init[:, k] = (np.sqrt(power_per_user) * w_k).flatten()
         
         self.UAV.G = np.mat(G_init, dtype=complex)
-        # [INICIO BLOQUE FALTANTE]
-        # ==========================================
-        # FASE 2: Lógica de Selección TDMA (Opción B: Max-Min Demand)
-        # ==========================================
-        # Decidir quién transmite en ESTE paso basado en la historia
         
-        # Si estamos al principio o hay empate de ceros, aleatorio para romper simetría
-        if np.sum(self.user_rates_accumulated) == 0:
-             self.active_user_k = np.random.randint(0, self.user_num)
-        else:
-             # El usuario con MENOR tasa acumulada tiene prioridad
-             self.active_user_k = np.argmin(self.user_rates_accumulated)
+        # 6. Setup TDMA
+        self.user_rates_accumulated = np.zeros(self.user_num)
+        self.active_user_k = np.random.randint(0, self.user_num) 
         
-        self.user_rates_accumulated = np.zeros(self.user_num)        
-        self.active_user_k = np.random.randint(0, self.user_num) # Comenta esto       
-        self.update_channel_capacity()   
-        # --- TDMA MEMORY ---
-        # Importante: En el paso 0, elegimos al azar para arrancar sin sesgos
-        #self.active_user_k = 3 # ¡Fuerza al usuario cercano!
+        # 7. Update capacities
+        self.update_channel_capacity()
     
     def step(self, action_0=0, action_1=0, G=0, Phi=0, set_pos_x=0, set_pos_y=0):
         # 0. Actualizar reloj
@@ -439,21 +432,19 @@ class MiniSystem(object):
     def reward(self):
         # --- LÓGICA MAX-MIN PARA TDMA ---
         
-        # 1. Calcular las tasas promedio HASTA AHORA (incluyendo este paso)
-        # self.render_obj.t_index es el paso actual (1, 2, ... 400)
+        # 1. Calcular las tasas promedio HASTA AHORA
         current_step = max(1, self.render_obj.t_index)
-        
-        # Tasas promedio históricas
         avg_rates = self.user_rates_accumulated / current_step
         
-        # El objetivo es maximizar el MÍNIMO de estos promedios
+        # Objetivo: Maximizar el MÍNIMO de los promedios
         min_avg_rate = np.min(avg_rates)
-        sum_avg_rate = np.sum(avg_rates)
 
-        # --- CÁLCULO DE ENERGÍA (Igual que antes) ---
+        # --- CÁLCULO DE ENERGÍA ---
         dt = delta_time
         v_t = getattr(self, 'current_velocity', 0.0) 
         e_fly = get_energy_consumption(v_t) 
+        
+        # Energía de Transmisión
         p_trans_watts = np.trace(self.UAV.G * self.UAV.G.H).real
         e_trans = p_trans_watts * dt
         
@@ -469,12 +460,14 @@ class MiniSystem(object):
         total_energy = e_fly + e_trans + e_ris
         self.total_power = total_energy / dt 
 
-        # --- RECOMPENSA FINAL ---
+        # --- RECOMPENSA FINAL (PASO 3: Rebalanceo) ---
         P_ref = 1500.0 
         w_min = 20.0 
-        w_energy = 0.05 # Un poco más alto para que importe
         
-        # Usamos min_avg_rate en lugar de min_rate instantáneo
+        # CAMBIO AQUÍ: Reducimos w_energy de 0.05 a 0.005 (10 veces menos)
+        # Esto reduce el "costo de vida" del UAV de -20 a -2 por episodio.
+        w_energy = 0.005 
+        
         reward = (w_min * min_avg_rate) - (w_energy * (self.total_power / P_ref))
         
         # Clip de Seguridad
@@ -641,7 +634,7 @@ class MiniSystem(object):
         
         # Capacidad Shannon (log2)
         return math.log2(1 + sinr)
-        
+
     def get_system_action_dim(self):
         result = 0
         # 0 UAV movement (x, y)
