@@ -85,7 +85,8 @@ class MiniSystem(object):
         # User noise power: -80 dBm
         # Usas -80 dBm porque estás simulando un receptor con un ancho de banda de 
         # 20 MHz que opera en condiciones reales
-        self.sigma_u_dBm = -80 
+        # POR ESTO (Valor estándar térmico):
+        self.sigma_u_dBm = -104  # -174 + 10*log10(10MHz) + NF(10dB) aprox
         self.sigma_u = 10 ** (self.sigma_u_dBm / 10) * 1e-3 # Convert dBm to Watts (Linear)
         # 1.init entities: 1 UAV, 1 RIS, many users
         self.data_manager = DataManager(file_path='./data', project_name = project_name, \
@@ -338,26 +339,75 @@ class MiniSystem(object):
 
         # 3. Actualizar Canales
         for h in self.h_U_k + self.h_R_k: h.update_CSI()
-        if self.if_with_RIS: self.H_UR.update_CSI()
+        self.H_UR.update_CSI()
 
         # --- SELECCIÓN TDMA ---
         if np.sum(self.user_rates_accumulated) == 0:
              self.active_user_k = np.random.randint(0, self.user_num)
         else:
              self.active_user_k = np.argmin(self.user_rates_accumulated)
-
-        # 4. Acciones Beamforming/RIS
-        if isinstance(G, (list, tuple, np.ndarray)):
-            self.UAV.G = convert_list_to_complex_matrix(G, (self.UAV.ant_num, self.user_num)) * math.pow(self.power_factor, 0.5)
-        
+        # ==============================================================================
+        # SOLUCIÓN NGUYEN: BEAMFORMING HÍBRIDO (MRT)
+        # La IA no decide G. La física decide G.
+        # Objetivo: Apuntar la energía al RIS (si hay RIS) o al Usuario (si no).
+        # ==============================================================================
+        # Conjugada transpuesta
+        # Nguyen usa el canal UAV->RIS para el precoding del UAV.
+        target_channel = self.H_UR.channel_matrix # (N_ris, N_uav)
+        h_conj = target_channel.H
+        # Primero configuramos el RIS (que sí controla la IA)
         if self.if_with_RIS:
             self.RIS.Phi = convert_list_to_complex_diag(Phi, self.RIS.ant_num)
-            # HRIS scaling
+            # HRIS scaling (Amplificación Activa)
             N_a = min(getattr(self, 'num_active_elements', 4), self.RIS.ant_num)
-            a_max = getattr(self, 'a_max', 100)
+            a_max = getattr(self, 'a_max', 100) # 40dB gain
             phi_diag = np.array(np.diag(self.RIS.Phi), dtype=complex).copy()
-            for i in range(N_a): phi_diag[i] *= a_max
+            
+            # Amplificamos SOLO los elementos activos
+            for i in range(N_a): 
+                phi_diag[i] *= a_max
             self.RIS.Phi = np.mat(np.diag(phi_diag))
+
+        # AHORA calculamos G óptimo para este Phi y este Usuario
+        user_k = self.active_user_k
+        h_U_k = self.h_U_k[user_k].channel_matrix # Directo
+        h_R_k = self.h_R_k[user_k].channel_matrix # Reflejado
+        
+        # Canal Total Visto desde el UAV: h_total = h_directo + h_reflejado
+        # h_reflected = h_R_k * Phi * H_UR
+        h_reflected = h_R_k @ self.RIS.Phi @ self.H_UR.channel_matrix
+        h_total = h_U_k + h_reflected # (1, N_uav)
+        
+        # MRT Beamforming Vector: w = h_total^H / ||h_total||
+        w = h_total.H
+        norm_w = np.linalg.norm(w)
+        if norm_w > 0:
+            w = w / norm_w
+        
+        # Asignar potencia máxima al usuario activo
+        # G debe ser (N_uav, User_Num). Pero en TDMA solo iluminamos al activo.
+        G_new = np.zeros((self.UAV.ant_num, self.user_num), dtype=complex)
+        
+        # Asignamos el vector de peso w multiplicado por raiz de Potencia
+        # P_max = self.power_factor (que es G_Pmax ~ 1 Watt o 100 dependiendo tu escala)
+        p_sqrt = math.sqrt(self.power_factor)
+        
+        # Colocamos el vector en la columna del usuario activo
+        G_new[:, user_k] = (w * p_sqrt).flatten()
+        
+        self.UAV.G = np.mat(G_new)
+
+        # 4. Acciones Beamforming/RIS       
+        #if isinstance(G, (list, tuple, np.ndarray)):
+        #    self.UAV.G = convert_list_to_complex_matrix(G, (self.UAV.ant_num, self.user_num)) * math.pow(self.power_factor, 0.5)        
+        #if self.if_with_RIS:
+        #    self.RIS.Phi = convert_list_to_complex_diag(Phi, self.RIS.ant_num)
+        # HRIS scaling
+        #    N_a = min(getattr(self, 'num_active_elements', 4), self.RIS.ant_num)
+        #    a_max = getattr(self, 'a_max', 100)
+        #    phi_diag = np.array(np.diag(self.RIS.Phi), dtype=complex).copy()
+        #    for i in range(N_a): phi_diag[i] *= a_max
+        #    self.RIS.Phi = np.mat(np.diag(phi_diag))
 
         # 5. Física y Capacidades
         self.update_channel_capacity()
@@ -579,10 +629,6 @@ class MiniSystem(object):
         return 0.0
 
     def get_system_action_dim(self):
-        """
-        function used in main function to get the dimension of actions
-        CORRECTED: Must return Movement + RIS + Beamforming dimensions
-        """
         result = 0
         # 0 UAV movement (x, y)
         result += 2
@@ -591,11 +637,10 @@ class MiniSystem(object):
         if self.if_with_RIS:
             result += self.RIS.ant_num   
         
-        # 2 beamforming matrix dimension (Real + Imag parts), i.e., 2 * UAV_ant_num * user_num
-        # Each complex entry in the beamforming matrix is split into real and imaginary parts
-        result += 2 * self.UAV.ant_num * self.user_num 
+        # 2 Beamforming Matrix (G) - ELIMINADO
+        # result += 2 * self.UAV.ant_num * self.user_num # <--- COMENTAR ESTO
+        
         return result
-# ... (other methods like get_system_state_dim) ...
 
     def observe(self):
         """
