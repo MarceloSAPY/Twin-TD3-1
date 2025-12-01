@@ -588,46 +588,60 @@ class MiniSystem(object):
 
     def calculate_capacity_of_user_k(self, k):
         """
-        Calcula la capacidad bajo protocolo TDMA (Sin interferencia inter-usuario).
-        Si el usuario k NO es el usuario activo, su capacidad es 0.
+        Calcula la capacidad (Rate) considerando:
+        1. Señal Directa + Reflejada (Beamforming)
+        2. Ruido Térmico del Usuario (Piso de ruido)
+        3. [NUEVO] Ruido Amplificado por el RIS Activo (Física de Nguyen)
         """
-        # 1. Regla de Oro TDMA: Si no es tu turno, no recibes nada.
+        # 1. Regla TDMA: Si no es tu turno, tasa = 0
         if k != self.active_user_k:
             return 0.0
 
-        # 2. Física del Canal (Solo para el usuario activo)
-        noise_power = self.user_list[k].noise_power
+        # --- A. CÁLCULO DE LA SEÑAL ÚTIL ---
+        # Canales
+        h_U_k = self.h_U_k[k].channel_matrix # (1, Ant_UAV)
+        h_R_k = self.h_R_k[k].channel_matrix # (1, Ant_RIS)
         
-        # Obtenemos los canales combinados (ya calculados en update_channel_capacity)
-        # Nota: calculate_comprehensive... se llama ANTES de esto en update_channel_capacity
-        # Pero aquí recalculamos el SINR usando los punteros directos para claridad.
-        h_U_k = self.h_U_k[k].channel_matrix
-        h_R_k = self.h_R_k[k].channel_matrix
+        # Canal Combinado (UAV -> RIS -> Usuario + UAV -> Usuario)
+        # H_total = h_directo + h_reflejado
+        h_reflected = h_R_k @ self.RIS.Phi @ self.H_UR.channel_matrix
+        H_combined = h_U_k + h_reflected
         
-        # Canal Total = Directo + Reflejado
-        H_combined = h_U_k + h_R_k @ self.RIS.Phi @ self.H_UR.channel_matrix
-        
-        # 3. Beamforming: Solo nos importa la columna k de la matriz G
-        # (El agente sigue generando G completa, pero físicamente solo "apuntamos" una columna)
+        # Beamformer del UAV (G)
         G_k = self.UAV.G[:, k]
         
-        # 4. Potencia de Señal
-        signal = (np.abs(H_combined @ G_k)**2).item()
+        # Potencia de Señal Recibida = |H_comb * w|^2
+        signal_power = (np.abs(H_combined @ G_k)**2).item()
         
-        # 5. SINR -> SNR (En TDMA la interferencia de otros usuarios es 0)
-        interference = 0 
+        # --- B. CÁLCULO DEL RUIDO TOTAL (Aquí está el cambio) ---
         
-        snr = signal / (dB_to_normal(noise_power)) # Sin interferencia
+        # 1. Ruido Térmico del Receptor (Usuario)
+        # sigma_u^2 (Watt)
+        noise_user = dB_to_normal(self.user_list[k].noise_power)
         
-        # 6. Capacidad de Shannon
-        return math.log2(1 + snr)
-            
+        # 2. Ruido Amplificado del RIS (Active Noise)
+        # Fórmula Nguyen: || h_rk^H * Phi ||^2 * sigma_r^2
+        # h_R_k es (1, N). Phi es (N, N).
+        # Vector de canal efectivo de ruido: h_noise = h_R_k * Phi
+        h_noise_eff = h_R_k @ self.RIS.Phi 
         
-
-    def calculate_secure_capacity_of_user_k(self, k):
-        # Not used when optimizing fairness; return 0 to keep compatibility
-        return 0.0
-
+        # Norma al cuadrado del vector
+        norm_noise_sq = (np.linalg.norm(h_noise_eff)**2).item()
+        
+        # Potencia de Ruido RIS inyectada al usuario
+        # self.sigma_r se calculó en __init__ como sigma_u * (eta + 1)
+        noise_ris_active = norm_noise_sq * getattr(self, 'sigma_r', 0.0)
+        
+        # Ruido Total = Ruido Usuario + Ruido RIS
+        total_noise_power = noise_user + noise_ris_active
+        
+        # --- C. CÁLCULO DE SINR y CAPACIDAD ---
+        # Evitamos división por cero con un epsilon pequeño
+        sinr = signal_power / (total_noise_power + 1e-16)
+        
+        # Capacidad Shannon (log2)
+        return math.log2(1 + sinr)
+        
     def get_system_action_dim(self):
         result = 0
         # 0 UAV movement (x, y)
